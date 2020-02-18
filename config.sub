@@ -896,6 +896,11 @@ case $basic_machine in
 		os=$os"spe"
 		;;
 	e500v[12]-*)
+		basic_machine=powerpc-`echo $basic_machine | sed 's/^[^-]*-//'`
+		os=$os"spe"
+		;;
+		;;
+	e500v[12]-*)
 		basic_machine=powerpc-`echo "$basic_machine" | sed 's/^[^-]*-//'`
 		os=$os"spe"
 		;;
@@ -1193,6 +1198,9 @@ case $basic_machine in
 		;;
 	vpp*|vx|vx-*)
 		basic_machine=f301-fujitsu
+		;;
+	wasm32)
+		basic_machine=wasm32-unknown
 		;;
 	w65*)
 		basic_machine=w65-wdc
@@ -1617,6 +1625,9 @@ case $basic_machine in
 		;;
 	sparc-* | *-sun)
 		os=sunos4.1.1
+		;;
+	pru-*)
+		os=-elf
 		;;
 	pru-*)
 		os=elf
