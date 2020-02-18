@@ -85,23 +85,17 @@ struct macho_commands_view
     size_t base_offset;
 };
 
-enum debug_section
-{
-    DEBUG_INFO,
-    DEBUG_LINE,
-    DEBUG_ABBREV,
-    DEBUG_RANGES,
-    DEBUG_STR,
-    DEBUG_MAX
-};
-
 static const char *const debug_section_names[DEBUG_MAX] =
     {
         "__debug_info",
         "__debug_line",
         "__debug_abbrev",
         "__debug_ranges",
-        "__debug_str"
+        "__debug_str",
+        "",
+        "__debug_str_offs",
+        "",
+        "__debug_rnglists"
     };
 
 struct found_dwarf_section
@@ -827,7 +821,8 @@ macho_try_dwarf (struct backtrace_state *state,
   struct backtrace_view dwarf_view;
   int dwarf_view_valid = 0;
   size_t offset = 0;
-  struct found_dwarf_section dwarf_sections[DEBUG_MAX];
+  struct found_dwarf_section sections[DEBUG_MAX];
+  struct dwarf_sections dwarf_sections;
   uintptr_t min_dwarf_offset = 0;
   uintptr_t max_dwarf_offset = 0;
   uint32_t i = 0;
@@ -881,7 +876,7 @@ macho_try_dwarf (struct backtrace_state *state,
 
   // Get DWARF sections
 
-  memset (dwarf_sections, 0, sizeof (dwarf_sections));
+  memset (sections, 0, sizeof (sections));
   offset = 0;
   for (i = 0; i < commands_view.commands_count; i++)
     {
@@ -948,29 +943,30 @@ macho_try_dwarf (struct backtrace_state *state,
                     {
                       uintptr_t dwarf_section_end;
 
-                      if (strncmp (raw_section->sectname,
+                      if (debug_section_names[k][0] != '\0' &&
+                          strncmp (raw_section->sectname,
                                    debug_section_names[k],
                                    sizeof (raw_section->sectname)) == 0)
                         {
                           *found_dwarf = 1;
 
-                          dwarf_sections[k].file_offset =
+                          sections[k].file_offset =
                               macho_file_to_host_u32 (
                                   commands_view.bytes_swapped,
                                   raw_section->offset);
-                          dwarf_sections[k].file_size =
+                          sections[k].file_size =
                               macho_file_to_host_usize (
                                   commands_view.bytes_swapped,
                                   raw_section->size);
 
                           if (min_dwarf_offset == 0 ||
-                              dwarf_sections[k].file_offset <
+                              sections[k].file_offset <
                               min_dwarf_offset)
-                            min_dwarf_offset = dwarf_sections[k].file_offset;
+                            min_dwarf_offset = sections[k].file_offset;
 
                           dwarf_section_end =
-                              dwarf_sections[k].file_offset +
-                              dwarf_sections[k].file_size;
+                              sections[k].file_offset +
+                              sections[k].file_size;
                           if (dwarf_section_end > max_dwarf_offset)
                             max_dwarf_offset = dwarf_section_end;
 
@@ -1003,27 +999,21 @@ macho_try_dwarf (struct backtrace_state *state,
 
   for (i = 0; i < DEBUG_MAX; i++)
     {
-      if (dwarf_sections[i].file_offset == 0)
-        dwarf_sections[i].data = NULL;
+      if (sections[i].file_offset == 0)
+        dwarf_sections.data[i] = NULL;
       else
-        dwarf_sections[i].data =
-            dwarf_view.data + dwarf_sections[i].file_offset - min_dwarf_offset;
+        dwarf_sections.data[i] =
+            dwarf_view.data + sections[i].file_offset - min_dwarf_offset;
+
+      dwarf_sections.size[i] = sections[i].file_size;
     }
 
   if (!backtrace_dwarf_add (state, vmslide,
-                            dwarf_sections[DEBUG_INFO].data,
-                            dwarf_sections[DEBUG_INFO].file_size,
-                            dwarf_sections[DEBUG_LINE].data,
-                            dwarf_sections[DEBUG_LINE].file_size,
-                            dwarf_sections[DEBUG_ABBREV].data,
-                            dwarf_sections[DEBUG_ABBREV].file_size,
-                            dwarf_sections[DEBUG_RANGES].data,
-                            dwarf_sections[DEBUG_RANGES].file_size,
-                            dwarf_sections[DEBUG_STR].data,
-                            dwarf_sections[DEBUG_STR].file_size,
-                            ((__DARWIN_BYTE_ORDER == __DARWIN_BIG_ENDIAN)
-                            ^ commands_view.bytes_swapped),
-                            error_callback, data, fileline_fn))
+                            &dwarf_sections,
+                            ((__DARWIN_BYTE_ORDER == __DARWIN_BIG_ENDIAN)^ commands_view.bytes_swapped),
+                            NULL, /* altlink */
+                            error_callback, data, fileline_fn,
+                            NULL /* returned fileline_entry */))
     goto end;
 
   // Don't release the DWARF view because it is still in use
