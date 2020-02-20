@@ -1124,6 +1124,15 @@ macho_add (struct backtrace_state *state,
   size_t extension_len;
   ssize_t i;
 
+  static const char *framework = ".framework";
+  size_t framework_len = strlen (framework);
+  char full_framework_dbsym[PATH_MAX];
+  char* framework_path = 0;
+
+  int matched;
+  int dsym_had_sym;
+  int dsym_had_dwarf;
+
   *found_sym = 0;
   *found_dwarf = 0;
 
@@ -1148,10 +1157,13 @@ macho_add (struct backtrace_state *state,
                              &image_file_max_address))
     goto end;
 
-  image_actual_base_address =
-      image_file_base_address + vmslide;
+  // As we use _dyld_get_image_header the vmslide is the actual base address already
+  image_actual_base_address = vmslide;
   image_actual_max_address =
-      image_file_max_address + vmslide;
+      image_file_max_address + vmslide - image_file_base_address;
+
+  //Calculate the vmslide from the real start address
+  vmslide =  vmslide - image_file_base_address;
 
   if (image_actual_base_address == 0)
     {
@@ -1187,6 +1199,8 @@ macho_add (struct backtrace_state *state,
 
   extension = ".dSYM";
   extension_len = strlen (extension);
+
+  //Search for a dSYM in the executable path, this includes dylibs
   while ((directory_entry = readdir (executable_dir)))
     {
       if (directory_entry->d_namlen < extension_len)
@@ -1194,10 +1208,6 @@ macho_add (struct backtrace_state *state,
       if (strncasecmp (directory_entry->d_name + directory_entry->d_namlen
                        - extension_len, extension, extension_len) == 0)
         {
-          int matched;
-          int dsym_had_sym;
-          int dsym_had_dwarf;
-
           // Found a dSYM
           strncpy (dsym_full_path, executable_dirname, PATH_MAX);
           strncat (dsym_full_path, "/", PATH_MAX);
@@ -1219,6 +1229,57 @@ macho_add (struct backtrace_state *state,
               goto end;
             }
         }
+    }
+
+  // If we couldn't find a dSYM in the executable path, check whether the library is from a
+  // framework and search for a dSYM in the special .framework.dSYM folder
+  framework_path = strstr(executable_dirname, framework);
+  if (framework_path) {
+      size_t new_len = framework_path - executable_dirname + framework_len;
+      strncpy (full_framework_dbsym, executable_dirname, new_len);
+      full_framework_dbsym[new_len] = '\0';
+      strncat (full_framework_dbsym, extension, extension_len);
+
+      DIR *framework_dir = NULL;
+      if ((framework_dir = opendir (full_framework_dbsym)))
+      {
+          closedir (framework_dir);
+
+          if (!macho_try_dsym (state, error_callback, data,
+                               fileline_fn, &image_uuid,
+                               image_actual_base_address,
+                               image_actual_max_address, vmslide,
+                               full_framework_dbsym,
+                               &matched, &dsym_had_sym, &dsym_had_dwarf))
+            goto end;
+
+          if (matched)
+            {
+              *found_sym = dsym_had_sym;
+              *found_dwarf = dsym_had_dwarf;
+              ret = 1;
+              goto end;
+            }
+      }
+   }
+
+  strncpy (executable_dirname, filename, PATH_MAX);
+
+  // If we still don't have a DSYM file, load the DWARF data from the lib itself. Although there
+  // is no DWARF data in libs on macos embedded, this makes sure the symtab is loaded and we can
+  // try to resolve the symbols
+  if (!macho_try_dwarf (state, error_callback, data, fileline_fn,
+                        &image_uuid, image_actual_base_address, image_actual_max_address,
+                        vmslide, executable_dirname,
+                        &matched, &dsym_had_sym, &dsym_had_dwarf))
+    goto end;
+
+  if (matched)
+    {
+      *found_sym = dsym_had_sym;
+      *found_dwarf = dsym_had_dwarf;
+      ret = 1;
+      goto end;
     }
 
   // No matching dSYM
@@ -1344,13 +1405,16 @@ backtrace_initialize (struct backtrace_state *state,
   loaded_image_count = _dyld_image_count ();
   for (i = 0; i < loaded_image_count; i++)
     {
+
       int current_found_sym;
       int current_found_dwarf;
       int current_descriptor;
       intptr_t current_vmslide;
+      intptr_t image_header;
       const char *current_name;
 
       current_vmslide = _dyld_get_image_vmaddr_slide (i);
+      image_header = _dyld_get_image_header(i);
       current_name = _dyld_get_image_name (i);
 
       if (current_name == NULL || (i != 0 && current_vmslide == 0))
@@ -1363,7 +1427,7 @@ backtrace_initialize (struct backtrace_state *state,
         }
 
       if (macho_add (state, error_callback, data, current_descriptor,
-                      current_name, &macho_fileline_fn, current_vmslide,
+                      current_name, &macho_fileline_fn, image_header,
                       &current_found_sym, &current_found_dwarf))
         {
           found_sym = found_sym || current_found_sym;
