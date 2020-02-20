@@ -546,8 +546,7 @@ macho_symbol_type_relevant (uint8_t type)
 {
   uint8_t type_field = (uint8_t) (type & N_TYPE);
 
-  return !(type & N_EXT) &&
-         (type_field == N_ABS || type_field == N_SECT);
+  return (type_field == N_ABS || type_field == N_SECT);
 }
 
 int
